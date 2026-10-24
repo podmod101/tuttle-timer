@@ -27,7 +27,33 @@ Panel {
   readonly property string sound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
 
   // { id, name, command, duration (s), repeat, state: running|paused|done,
-  //   endsAt (ms, running), left (s, paused) }
+  //   endsAt (ms, running), left (s, paused),
+  //   log: [{ at (ms), code (exit status), out (text) }] newest last }
+  // The log lives on the timer object, so it survives restarts and repeats and
+  // goes away only when the timer is removed.
+  readonly property int maxLog: 20
+
+  // Commands used before, newest first: [{ name, command, last (ms), uses }].
+  // Kept in actions.json beside timers.json, so they outlive any one timer.
+  property var savedActions: []
+  readonly property int maxSavedActions: 12
+
+  function rememberAction(name, command) {
+    var c = command.trim()
+    if (c === "") return
+    var prev = savedActions.filter(function(a) { return a.command === c })
+    var entry = { name: name.trim(), command: c, last: Date.now(),
+                  uses: (prev.length ? prev[0].uses : 0) + 1 }
+    if (entry.name === "" && prev.length) entry.name = prev[0].name
+    savedActions = [entry].concat(savedActions.filter(function(a) { return a.command !== c }))
+                          .slice(0, maxSavedActions)
+    actionStore.setText(JSON.stringify(savedActions))
+  }
+
+  function forgetActions() {
+    savedActions = []
+    actionStore.setText("[]")
+  }
   property var timers: []
   property double now: Date.now()
   property string error: ""
@@ -97,6 +123,7 @@ Panel {
     timers = list
     now = Date.now()
     save()
+    rememberAction(name, command)
     return true
   }
 
@@ -133,6 +160,15 @@ Panel {
     })
   }
 
+  function appendLog(id, entry) {
+    update(id, function(t) {
+      var l = (t.log || []).concat([entry])
+      t.log = l.length > root.maxLog ? l.slice(l.length - root.maxLog) : l
+    })
+  }
+
+  function clearLog(id) { update(id, function(t) { t.log = [] }) }
+
   function toggleRepeat(id) { update(id, function(t) { t.repeat = !t.repeat }) }
 
   function remove(id) {
@@ -149,7 +185,50 @@ Panel {
     Quickshell.execDetached(["notify-send", "-u", "critical", "-i", "alarm-symbolic", "-a", "Timer",
                              "Time is up", t.name])
     Quickshell.execDetached(["pw-play", sound])
-    if (t.command !== "") Quickshell.execDetached(["sh", "-c", t.command])
+    if (t.command !== "") runCommand(t)
+  }
+
+  // Run the finish command, then show what it printed (stdout and stderr) in a
+  // notification. Critical urgency if it exited non-zero.
+  function runCommand(t) {
+    cmdRunner.createObject(root, {
+      timerId: t.id,
+      label: t.name !== "" ? t.name : t.command,
+      command: ["sh", "-c", "exec 2>&1; " + t.command],
+      running: true
+    })
+  }
+
+  Component {
+    id: cmdRunner
+    Process {
+      id: proc
+      property string label: ""
+      property string timerId: ""
+      property string output: ""
+      property int code: -1
+      property bool streamDone: false
+
+      function report() {
+        if (code < 0 || !streamDone) return
+        var text = output.trim()
+        root.appendLog(timerId, { at: Date.now(), code: code,
+                                  out: text.length > 600 ? "…" + text.slice(-600) : text })
+        if (text.length > 400) text = "…" + text.slice(-400)
+        if (text === "") text = "(no output)"
+        Quickshell.execDetached(["notify-send", "-u", code === 0 ? "normal" : "critical",
+                                 "-a", "Timer",
+                                 label + (code === 0 ? " finished" : " failed (exit " + code + ")"),
+                                 text])
+        proc.destroy()
+      }
+
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: { proc.output = text; proc.streamDone = true; proc.report() }
+      }
+      onExited: function(exitCode) { proc.code = exitCode; proc.report() }
+    }
   }
 
   // Expire anything past its end time; repeating timers start over.
@@ -185,6 +264,19 @@ Panel {
   Component.onCompleted: {
     Quickshell.execDetached(["mkdir", "-p", stateDir])
     store.reload()
+    actionStore.reload()
+  }
+
+  FileView {
+    id: actionStore
+    path: root.stateDir + "/actions.json"
+    printErrors: false
+    onLoaded: {
+      try {
+        var list = JSON.parse(text())
+        if (Array.isArray(list)) root.savedActions = list.slice(0, root.maxSavedActions)
+      } catch (e) {}
+    }
   }
 
   FileView {
@@ -329,6 +421,36 @@ Panel {
             onAccepted: startButton.clicked()
           }
 
+          Flow {
+            visible: root.savedActions.length > 0
+            width: parent.width
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.savedActions
+
+              Button {
+                required property var modelData
+                text: modelData.name !== "" ? modelData.name
+                    : (modelData.command.length > 22 ? modelData.command.slice(0, 21) + "…" : modelData.command)
+                tooltipText: modelData.command
+                bordered: true
+                foreground: root.foreground
+                onClicked: {
+                  commandField.text = modelData.command
+                  if (nameField.text === "") nameField.text = modelData.name
+                }
+              }
+            }
+
+            Button {
+              text: "Forget all"
+              tooltipText: "Clear the saved actions list"
+              foreground: root.dim
+              onClicked: root.forgetActions()
+            }
+          }
+
           Text {
             visible: root.error !== ""
             width: parent.width
@@ -355,15 +477,18 @@ Panel {
                 id: row
                 required property var modelData
                 readonly property bool done: modelData.state === "done"
+                readonly property var runs: modelData.log || []
+                property bool showLog: false
+                readonly property real topHeight: Math.max(info.implicitHeight, controls.implicitHeight)
                 width: parent.width
-                height: Math.max(info.implicitHeight, controls.implicitHeight)
+                height: topHeight + (showLog ? logBox.implicitHeight + Style.space(6) : 0)
 
                 Column {
                   id: info
                   anchors.left: parent.left
                   anchors.right: controls.left
                   anchors.rightMargin: Style.space(8)
-                  anchors.verticalCenter: parent.verticalCenter
+                  y: (row.topHeight - height) / 2
 
                   Text {
                     width: parent.width
@@ -383,12 +508,25 @@ Panel {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
                   }
+
+                  Text {
+                    visible: row.runs.length > 0
+                    textFormat: Text.PlainText
+                    text: row.runs.length > 0
+                        ? "last run " + Qt.formatDateTime(new Date(row.runs[row.runs.length - 1].at), "h:mm:ss AP")
+                          + (row.runs[row.runs.length - 1].code === 0 ? " · ok" : " · exit " + row.runs[row.runs.length - 1].code)
+                          + " · " + row.runs.length + (row.runs.length === 1 ? " run" : " runs")
+                        : ""
+                    color: row.runs.length > 0 && row.runs[row.runs.length - 1].code !== 0 ? Color.urgent : root.dim
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                  }
                 }
 
                 Row {
                   id: controls
                   anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
+                  y: (row.topHeight - height) / 2
                   spacing: Style.space(4)
 
                   Button {
@@ -415,10 +553,66 @@ Panel {
                   }
 
                   Button {
+                    visible: row.runs.length > 0
+                    iconText: String.fromCodePoint(0xF02DA)
+                    tooltipText: row.showLog ? "Hide log" : "Show log"
+                    selected: row.showLog
+                    foreground: root.foreground
+                    onClicked: row.showLog = !row.showLog
+                  }
+
+                  Button {
                     iconText: String.fromCodePoint(0xF0156)
                     tooltipText: "Remove"
                     foreground: root.foreground
                     onClicked: root.remove(row.modelData.id)
+                  }
+                }
+
+                Column {
+                  id: logBox
+                  visible: row.showLog
+                  y: row.topHeight + Style.space(6)
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Repeater {
+                    // newest first
+                    model: row.showLog ? row.runs.slice().reverse() : []
+
+                    Column {
+                      id: entry
+                      required property var modelData
+                      width: logBox.width
+
+                      Text {
+                        textFormat: Text.PlainText
+                        text: Qt.formatDateTime(new Date(entry.modelData.at), "ddd h:mm:ss AP")
+                            + (entry.modelData.code === 0 ? " · ok" : " · exit " + entry.modelData.code)
+                        color: entry.modelData.code === 0 ? root.dim : Color.urgent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      Text {
+                        width: parent.width
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 4
+                        elide: Text.ElideRight
+                        text: entry.modelData.out === "" ? "(no output)" : entry.modelData.out
+                        color: root.foreground
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+                    }
+                  }
+
+                  Button {
+                    text: "Clear log"
+                    bordered: true
+                    foreground: root.foreground
+                    onClicked: { row.showLog = false; root.clearLog(row.modelData.id) }
                   }
                 }
               }

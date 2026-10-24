@@ -10,7 +10,16 @@ its icon, and a click opens a panel to manage several timers at once.
 - Presets (1m, 5m, 10m, 15m, 30m) or a typed time
 - Alarms for a clock time (`@7:30` = the next 07:30)
 - Pause, resume, restart, repeat and remove per timer
-- On finish: critical notification, alarm sound, and an optional command
+- On finish: critical notification, alarm sound, and an optional command whose
+  output (stdout and stderr, last 400 characters) and exit status appear in a
+  second notification (critical if it failed)
+- Action log: every run of a timer's finish command is recorded on that timer
+  (time, exit status, output; last 20 runs). Open it with the history button on
+  the timer's row. It survives restarts and repeats and goes away only when the
+  timer is removed. "Clear log" empties it.
+- Saved actions: commands you have started timers with are remembered (last 12,
+  in `~/.local/state/<plugin id>/actions.json`) and shown as buttons under the
+  command field; click one to refill it. "Forget all" clears the list.
 - Timers keep absolute end times in `~/.local/state/podmod101.timer/timers.json`,
   so they survive shell restarts
 
@@ -72,3 +81,7 @@ omarchy restart shell                     # needed after editing Timer.qml
   the old copy of the widget and the edit will not show up otherwise.
 - Don't place it on the far right next to the tray: the label makes it wide and
   it can crowd the tray icons.
+
+## Roadmap
+
+Planned features, including AI agent actions, are in [ROADMAP.md](ROADMAP.md).
