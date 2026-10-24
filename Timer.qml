@@ -11,14 +11,19 @@ import qs.Ui
 // Time field accepts minutes ("5"), "90s", "1h30m", "1:30:00" (h:m:s) or a
 // clock time with "@" ("@7:30" = next 07:30 alarm). Each timer can pause,
 // restart, repeat, and run a command when it finishes. Timers are kept in
-// ~/.local/state/podmod101.timer/timers.json with absolute end times, so
+// ~/.local/state/<plugin id>/timers.json with absolute end times, so
 // they survive shell restarts.
 Panel {
   id: root
-  moduleName: "podmod101.timer"
-  ipcTarget: "podmod101.timer"
+  // No hard-coded plugin id: the manifest id is the single source of truth.
+  // Order: id given by the shell, then $OMARCHY_PLUGIN_ID, then this folder's name.
+  readonly property string pluginId: (bar && bar.pluginId) ? bar.pluginId
+    : (Quickshell.env("OMARCHY_PLUGIN_ID")
+       || Qt.resolvedUrl(".").toString().replace(/\/$/, "").split("/").pop())
+  moduleName: pluginId
+  ipcTarget: pluginId
 
-  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/podmod101.timer"
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/" + pluginId
   readonly property string sound: "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
 
   // { id, name, command, duration (s), repeat, state: running|paused|done,
@@ -212,13 +217,13 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: String.fromCodePoint(root.doneCount > 0 ? 0xF0026 : 0xF13AB)
-    labelText: root.bar && root.bar.vertical ? "" : root.label
+    text: String.fromCodePoint(root.doneCount > 0 ? 0xF0026 : 0xF13AB) + (shownLabel === "" ? "" : " " + shownLabel)
+    property string shownLabel: root.bar && root.bar.vertical ? "" : root.label
     active: root.anyRunning || root.doneCount > 0
-    // BarIconButton paints the label past its fixed slot, so widen the slot
-    // to fit it or the text overlaps the neighbouring widget.
-    fixedWidth: labelText === "" ? slotSize
-      : Math.max(slotSize, canvasSize + labelMetrics.advanceWidth + Style.space(12))
+    // Current BarIconButton has no label slot: the countdown rides in the button
+    // text, so widen the fixed slot to fit it.
+    fixedWidth: shownLabel === "" ? slotSize
+      : Math.max(slotSize, opticalSize + labelMetrics.advanceWidth + Style.space(12))
     tooltipText: root.soonest ? root.soonest.name + " · " + root.format(root.remaining(root.soonest)) : "Timer"
     onPressed: function(b) { root.toggle() }
   }
@@ -227,7 +232,7 @@ Panel {
     id: labelMetrics
     font.family: button.fontFamily
     font.pixelSize: button.fontSize
-    text: button.labelText
+    text: button.shownLabel
   }
 
   KeyboardPanel {
