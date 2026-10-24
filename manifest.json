@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "podmod101.timer",
+  "name": "Timer",
+  "version": "1.0.0",
+  "author": "podmod101",
+  "description": "Countdown timers and alarms with notification, sound and command on finish, like xfce4-timer-plugin",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Timer.qml"
+  },
+  "barWidget": {
+    "displayName": "Timer",
+    "description": "Multiple countdown timers and alarms; shows the soonest remaining time in the bar",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {}
+  }
+}
